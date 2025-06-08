@@ -1,0 +1,223 @@
+
+---
+title: "Análise Alternativa de uma Replicação – IAT"
+author: "Renan Carneiro Barbosa de Araújo"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: cosmo
+    df_print: paged
+params:
+  arquivo_dados: "data/sdsu .csv"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(broom)
+library(ggbeeswarm)
+library(gridExtra)
+library(boot)
+theme_set(theme_minimal(base_size = 14))
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Introdução
+
+Este relatório examina dados de um experimento IAT (Implicit Association Test) com foco nas diferenças médias entre os sexos. No IAT, valores maiores indicam associação com artes e menor associação com matemática. Níveis de viés:  
+- Pequeno: 0.15  
+- Médio: 0.35  
+- Grande: 0.65  
+
+# Leitura dos dados
+
+```{r}
+iat <- read_csv(here::here(params$arquivo_dados), col_types = "cccdc") %>%
+  mutate(sex = factor(sex, levels = c("m", "f"), ordered = TRUE))
+glimpse(iat)
+```
+
+# Distribuição dos escores IAT por sexo
+
+```{r}
+iat %>%
+  ggplot(aes(x = d_art, fill = sex, color = sex)) +
+  geom_histogram(binwidth = .2, alpha = 0.5, position = "identity") +
+  geom_rug(alpha = 0.4) +
+  facet_grid(sex ~ ., scales = "free_y") +
+  scale_fill_manual(values = c("#0072B2", "#D55E00")) +
+  scale_color_manual(values = c("#0072B2", "#D55E00")) +
+  labs(x = "Score IAT", y = "Contagem", title = "Distribuição dos Scores IAT") +
+  theme(legend.position = "none")
+```
+
+# Visualização dos escores por sexo
+
+```{r}
+iat %>%
+  ggplot(aes(x = sex, y = d_art, color = sex)) +
+  geom_quasirandom(width = 0.2, alpha = 0.7) +
+  scale_color_manual(values = c("#0072B2", "#D55E00")) +
+  labs(x = "Sexo", y = "Score IAT")
+```
+
+```{r}
+iat %>%
+  ggplot(aes(x = sex, y = d_art, color = sex)) +
+  geom_quasirandom(width = 0.2, alpha = 0.6) +
+  stat_summary(fun = mean, geom = "point", color = "black", size = 4, shape = 18) +
+  scale_color_manual(values = c("#0072B2", "#D55E00")) +
+  labs(x = "Sexo", y = "Score IAT", title = "Média dos Scores com Ponto Central")
+```
+
+# Estatísticas Resumidas
+
+```{r}
+iat %>%
+  group_by(sex) %>%
+  summarise(
+    media = mean(d_art),
+    desvio = sd(d_art),
+    n = n()
+  )
+```
+
+```{r}
+agrupado <- iat %>%
+  group_by(sex) %>%
+  summarise(media = mean(d_art))
+m <- agrupado %>% filter(sex == "m") %>% pull(media)
+f <- agrupado %>% filter(sex == "f") %>% pull(media)
+m - f
+```
+
+# Intervalo de Confiança (bootstrap)
+
+```{r}
+theta <- function(d, i) {
+  temp <- d %>% slice(i) %>% group_by(sex) %>% summarise(media = mean(d_art))
+  m <- temp %>% filter(sex == "m") %>% pull(media)
+  f <- temp %>% filter(sex == "f") %>% pull(media)
+  m - f
+}
+
+booted <- boot(data = iat, statistic = theta, R = 2000)
+
+ci <- tidy(booted, conf.level = 0.95, conf.method = "bca", conf.int = TRUE)
+ci
+```
+
+```{r}
+ci %>%
+  ggplot(aes(x = "", y = statistic, ymin = conf.low, ymax = conf.high)) +
+  geom_pointrange(color = "#CC79A7", linewidth = 1) +
+  geom_point(size = 3, color = "#CC79A7") +
+  labs(x = "Diferença", y = "IAT Homens - Mulheres", title = "Intervalo de Confiança")
+```
+
+# Comparação visual conjunta
+
+```{r}
+p1 <- iat %>%
+  ggplot(aes(x = sex, y = d_art, color = sex)) +
+  geom_quasirandom(width = .1, alpha = 0.7) + 
+  stat_summary(fun = mean, geom = "point", color = "black", size = 4, shape = 18) +
+  scale_color_manual(values = c("#0072B2", "#D55E00")) +
+  labs(x = "Sexo", y = "Score IAT")
+
+p2 <- ci %>%
+  ggplot(aes(x = "", y = statistic, ymin = conf.low, ymax = conf.high)) +
+  geom_pointrange(color = "#CC79A7") +
+  geom_point(size = 3, color = "#CC79A7") +
+  ylim(-1, 1) +
+  labs(x = "", y = "Diferença média")
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+# Conclusão
+
+Com base na amostra analisada:
+
+- Mulheres apresentaram associação **positiva e moderada** com artes em média (ex: média 0.419, DP 0.555, N = 94).
+- Homens tiveram média próxima de zero, indicando **neutralidade** (ex: média 0.031, DP 0.547, N = 31).
+- A diferença média foi de aproximadamente **-0.388**, com IC 95% entre **[-0.602, -0.157]**.
+- Isso sugere que as mulheres tendem a apresentar **maior viés pró-artes** que os homens, porém a intensidade exata da diferença ainda exige maior amostra.
+
+# Bootstrap Manual – Simple Percentile Method
+
+```{r}
+simple_percentile_bootstrap_ci <- function(data, metric_function, alpha = 0.05, n_bootstrap = 2000) {
+  bootstrap <- function(data, n) {
+    indices <- sample(nrow(data), replace = TRUE, size = n)
+    data %>% slice(indices)
+  }
+
+  bootstrap_results <- replicate(n_bootstrap, metric_function(bootstrap(data, nrow(data))))
+
+  lower <- quantile(bootstrap_results, alpha / 2)
+  upper <- quantile(bootstrap_results, 1 - alpha / 2)
+
+  list(results = bootstrap_results, ci = c(lower, upper))
+}
+
+diff_mf <- function(d) {
+  agrupado <- d %>% group_by(sex) %>% summarise(media = mean(d_art))
+  m <- agrupado %>% filter(sex == "m") %>% pull(media)
+  f <- agrupado %>% filter(sex == "f") %>% pull(media)
+  m - f
+}
+
+rb <- simple_percentile_bootstrap_ci(iat, diff_mf)
+rb$ci
+```
+
+
+```{r}
+# Histograma dos valores bootstrap manuais
+data.frame(value = rb$results) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(binwidth = 0.05, fill = "#2b8cbe", color = "white", alpha = 0.8) +
+  labs(title = "Distribuição das Diferenças (Bootstrap Manual)",
+       x = "Diferença entre médias (homens - mulheres)",
+       y = "Frequência") +
+  theme_minimal()
+```
+
+```{r}
+# Gráfico comparativo das estimativas e ICs das duas abordagens
+library(dplyr)
+
+comparativo <- bind_rows(
+  ci %>% mutate(metodo = "Bootstrap (bca)"),
+  tibble(
+    statistic = diff_mf(iat),
+    conf.low = rb$ci[1],
+    conf.high = rb$ci[2],
+    metodo = "Bootstrap (percentil)"
+  )
+)
+
+comparativo %>%
+  ggplot(aes(x = metodo, y = statistic, ymin = conf.low, ymax = conf.high)) +
+  geom_pointrange(color = "#e34a33", size = 1.2) +
+  geom_point(size = 3, shape = 18, color = "#2ca25f") +
+  coord_flip() +
+  labs(title = "Comparação entre métodos de Bootstrap",
+       x = "",
+       y = "Diferença estimada (Homens - Mulheres)") +
+  theme_minimal()
+```
+
+## Resultados e Discussões
+
+Ambos os métodos de bootstrapping (BCA e Percentil Simples) fornecem estimativas muito próximas para a diferença média de escores IAT entre homens e mulheres.
+
+Método BCA: diferença média ≈ -0.388, IC 95% [-0.602, -0.157]
+
+Percentil Simples: diferença média ≈ -0.388, IC 95% [-0.603, -0.165]
+
+As conclusões permanecem consistentes: em média, mulheres apresentam uma associação implícita mais forte com artes (ou seja, negativa com matemática) do que homens.
+
+Apesar de pequenas variações nos limites inferiores e superiores dos intervalos de confiança, ambos os métodos sugerem uma diferença real e estatisticamente significativa entre os grupos.
+
+O método do percentil simples, embora mais fácil de implementar, não oferece as correções de viés e assimetria presentes no BCA. Ainda assim, neste caso, ambos se alinham bastante, indicando robustez na estimativa da diferença de médias.
